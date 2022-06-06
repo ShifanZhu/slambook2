@@ -30,6 +30,8 @@ bool Frontend::AddFrame(myslam::Frame::Ptr frame) {
             StereoInit();
             break;
         case FrontendStatus::TRACKING_GOOD:
+            Track();
+            break;
         case FrontendStatus::TRACKING_BAD:
             Track();
             break;
@@ -228,7 +230,7 @@ int Frontend::EstimateCurrentPose() {
 }
 
 int Frontend::TrackLastFrame() {
-    // use LK flow to estimate points in the right image
+    // use LK flow to estimate points in the last image
     std::vector<cv::Point2f> kps_last, kps_current;
     for (auto &kp : last_frame_->features_left_) {
         if (kp->map_point_.lock()) {
@@ -313,7 +315,7 @@ int Frontend::FindFeaturesInRight() {
     std::vector<cv::Point2f> kps_left, kps_right;
     for (auto &kp : current_frame_->features_left_) {
         kps_left.push_back(kp->position_.pt);
-        auto mp = kp->map_point_.lock();
+        auto mp = kp->map_point_.lock(); // get kp's corresponding map point
         if (mp) {
             // use projected points as initial guess
             auto px =

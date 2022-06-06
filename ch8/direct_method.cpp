@@ -8,13 +8,16 @@ using namespace std;
 typedef vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>> VecVector2d;
 
 // Camera intrinsics
-double fx = 718.856, fy = 718.856, cx = 607.1928, cy = 185.2157;
+// double fx = 718.856, fy = 718.856, cx = 607.1928, cy = 185.2157;
+double fx = 278.708, fy = 278.657, cx = 169.431, cy = 124.534;
 // baseline
 double baseline = 0.573;
 // paths
-string left_file = "./left.png";
-string disparity_file = "./disparity.png";
-boost::format fmt_others("./%06d.png");    // other files
+// string left_file = "../left.png";
+string left_file = "../event6.png";
+// string disparity_file = "../disparity.png";
+string disparity_file = "../depth6.png";
+boost::format fmt_others("../%06d.png");    // other files
 
 // useful typedefs
 typedef Eigen::Matrix<double, 6, 6> Matrix6d;
@@ -112,6 +115,7 @@ inline float GetPixelValue(const cv::Mat &img, float x, float y) {
     uchar *data = &img.data[int(y) * img.step + int(x)];
     float xx = x - floor(x);
     float yy = y - floor(y);
+    // std::cout << "xxyy  " << x << " " << y << std::endl;
     return float(
         (1 - xx) * (1 - yy) * data[0] +
         xx * (1 - yy) * data[1] +
@@ -127,7 +131,7 @@ int main(int argc, char **argv) {
 
     // let's randomly pick pixels in the first image and generate some 3d points in the first image's frame
     cv::RNG rng;
-    int nPoints = 2000;
+    int nPoints = 200;
     int boarder = 20;
     VecVector2d pixels_ref;
     vector<double> depth_ref;
@@ -137,7 +141,9 @@ int main(int argc, char **argv) {
         int x = rng.uniform(boarder, left_img.cols - boarder);  // don't pick pixels close to boarder
         int y = rng.uniform(boarder, left_img.rows - boarder);  // don't pick pixels close to boarder
         int disparity = disparity_img.at<uchar>(y, x);
-        double depth = fx * baseline / disparity; // you know this is disparity to depth
+        // double depth = fx * baseline / disparity; // you know this is disparity to depth
+        double depth = float(disparity) / 30.0; // you know this is disparity to depth
+        if(depth < 0.1) continue;
         depth_ref.push_back(depth);
         pixels_ref.push_back(Eigen::Vector2d(x, y));
     }
@@ -145,8 +151,10 @@ int main(int argc, char **argv) {
     // estimates 01~05.png's pose using this information
     Sophus::SE3d T_cur_ref;
 
-    for (int i = 1; i < 6; i++) {  // 1~10
-        cv::Mat img = cv::imread((fmt_others % i).str(), 0);
+    for (int i = 6; i < 40; i++) {  // 1~10
+    // for (int i = 1; i < 6; i++) {  // 1~10
+        // cv::Mat img = cv::imread((fmt_others % i).str(), 0);
+        cv::Mat img = cv::imread("../event"+std::to_string(i)+".png", 0);
         // try single layer by uncomment this line
         // DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
         DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
@@ -203,7 +211,7 @@ void DirectPoseEstimationSingleLayer(
 
     // plot the projected pixels here
     cv::Mat img2_show;
-    cv::cvtColor(img2, img2_show, CV_GRAY2BGR);
+    cv::cvtColor(img2, img2_show, cv::COLOR_GRAY2BGR);
     VecVector2d projection = jaco_accu.projected_points();
     for (size_t i = 0; i < px_ref.size(); ++i) {
         auto p_ref = px_ref[i];
@@ -233,7 +241,7 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
         Eigen::Vector3d point_ref =
             depth_ref[i] * Eigen::Vector3d((px_ref[i][0] - cx) / fx, (px_ref[i][1] - cy) / fy, 1);
         Eigen::Vector3d point_cur = T21 * point_ref;
-        if (point_cur[2] < 0)   // depth invalid
+        if (point_cur[2] <= 0)   // depth invalid
             continue;
 
         float u = fx * point_cur[0] / point_cur[2] + cx, v = fy * point_cur[1] / point_cur[2] + cy;
@@ -303,6 +311,8 @@ void DirectPoseEstimationMultiLayer(
     int pyramids = 4;
     double pyramid_scale = 0.5;
     double scales[] = {1.0, 0.5, 0.25, 0.125};
+    // double pyramid_scale = 0.9;
+    // double scales[] = {1.0, 0.9, 0.81, 0.729};
 
     // create pyramids
     vector<cv::Mat> pyr1, pyr2; // image pyramids
