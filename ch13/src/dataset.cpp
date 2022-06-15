@@ -35,7 +35,7 @@ bool Dataset::Init() {
         Vec3 t;
         t << projection_data[3], projection_data[7], projection_data[11];
         t = K.inverse() * t;
-        K = K * 0.5;
+        K = K * 0.5; // rescale image to half size
         Camera::Ptr new_camera(new Camera(K(0, 0), K(1, 1), K(0, 2), K(1, 2),
                                           t.norm(), SE3(SO3(), t)));
         cameras_.push_back(new_camera);
@@ -62,6 +62,7 @@ Frame::Ptr Dataset::NextFrame() {
         return nullptr;
     }
 
+     // rescale image to half size
     cv::Mat image_left_resized, image_right_resized;
     cv::resize(image_left, image_left_resized, cv::Size(), 0.5, 0.5,
                cv::INTER_NEAREST);
