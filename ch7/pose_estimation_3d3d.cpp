@@ -14,7 +14,7 @@
 #include <g2o/core/optimization_algorithm_levenberg.h>
 #include <g2o/solvers/dense/linear_solver_dense.h>
 #include <chrono>
-#include <sophus/se3.hpp>
+#include <sophus/se3.h>
 
 using namespace std;
 using namespace cv;
@@ -41,19 +41,19 @@ void bundleAdjustment(
 );
 
 /// vertex and edges used in g2o ba
-class VertexPose : public g2o::BaseVertex<6, Sophus::SE3d> {
+class VertexPose : public g2o::BaseVertex<6, Sophus::SE3> {
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 
   virtual void setToOriginImpl() override {
-    _estimate = Sophus::SE3d();
+    _estimate = Sophus::SE3();
   }
 
   /// left multiplication on SE3
   virtual void oplusImpl(const double *update) override {
     Eigen::Matrix<double, 6, 1> update_eigen;
     update_eigen << update[0], update[1], update[2], update[3], update[4], update[5];
-    _estimate = Sophus::SE3d::exp(update_eigen) * _estimate;
+    _estimate = Sophus::SE3::exp(update_eigen) * _estimate;
   }
 
   virtual bool read(istream &in) override {}
@@ -75,10 +75,10 @@ public:
 
   virtual void linearizeOplus() override {
     VertexPose *pose = static_cast<VertexPose *>(_vertices[0]);
-    Sophus::SE3d T = pose->estimate();
+    Sophus::SE3 T = pose->estimate();
     Eigen::Vector3d xyz_trans = T * _point;
     _jacobianOplusXi.block<3, 3>(0, 0) = -Eigen::Matrix3d::Identity();
-    _jacobianOplusXi.block<3, 3>(0, 3) = Sophus::SO3d::hat(xyz_trans);
+    _jacobianOplusXi.block<3, 3>(0, 3) = Sophus::SO3::hat(xyz_trans);
   }
 
   bool read(istream &in) {}
@@ -264,7 +264,7 @@ void bundleAdjustment(
   // vertex
   VertexPose *pose = new VertexPose(); // camera pose
   pose->setId(0);
-  pose->setEstimate(Sophus::SE3d());
+  pose->setEstimate(Sophus::SE3());
   optimizer.addVertex(pose);
 
   // edges
@@ -289,7 +289,7 @@ void bundleAdjustment(
   cout << "T=\n" << pose->estimate().matrix() << endl;
 
   // convert to cv::Mat
-  Eigen::Matrix3d R_ = pose->estimate().rotationMatrix();
+  Eigen::Matrix3d R_ = pose->estimate().rotation_matrix();
   Eigen::Vector3d t_ = pose->estimate().translation();
   R = (Mat_<double>(3, 3) <<
     R_(0, 0), R_(0, 1), R_(0, 2),
