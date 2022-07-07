@@ -184,11 +184,11 @@ void extractFeatures(cv::Mat& img, cv::Mat& disparity_img, VecVector2d& pixels_r
 int main(int argc, char **argv) {
 
     // cv::Mat left_img = cv::imread(left_file, 0);
-    cv::Mat left_img = cv::imread(rgbd_dataset_path_+"/image_0/000499.png", 0);
+    cv::Mat left_img = cv::imread(rgbd_dataset_path_+"/image_0/000699.png", 0);
     cols = left_img.cols;
     rows = left_img.rows;
     // cv::Mat disparity_img = cv::imread(disparity_file, 0);
-    cv::Mat disparity_img = cv::imread(rgbd_dataset_path_+"/image_1/000499.png", cv::IMREAD_UNCHANGED);
+    cv::Mat disparity_img = cv::imread(rgbd_dataset_path_+"/image_1/000699.png", cv::IMREAD_UNCHANGED);
 
 
     VecVector2d pixels_ref;
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
     // estimates 01~05.png's pose using this information
     Sophus::SE3 T_cur_ref;
 
-    for (int i = 500; i < 3500; i+=1) {  // 1~10
+    for (int i = 700; i < 3500; i+=1) {  // 1~10
     // for (int i = 1; i < 6; i++) {  // 1~10
         // cv::Mat img = cv::imread((fmt_others % i).str(), 0);
         // cv::Mat img = cv::imread("../event"+std::to_string(i)+".png", 0);
@@ -210,9 +210,9 @@ int main(int argc, char **argv) {
             extractFeatures(left_img, disparity_img, pixels_ref, depth_ref, 1);
             continue;
         }
-        // DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
+        DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
         // try single layer by uncomment this line
-        DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
+        // DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
     }
     return 0;
 }
