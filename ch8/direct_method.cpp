@@ -38,8 +38,9 @@ public:
         const VecVector2d &px_ref_,
         const vector<double> depth_ref_,
         vector<bool> &outlier_,
+        vector<double> &outlier_cost_,
         Sophus::SE3 &T21_) :
-        img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), outlier(outlier_), T21(T21_) {
+        img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), outlier(outlier_), outlier_cost(outlier_cost_), T21(T21_) {
         projection = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
     }
 
@@ -71,6 +72,7 @@ private:
     const VecVector2d &px_ref;
     const vector<double> depth_ref;
     vector<bool> outlier;
+    vector<double> outlier_cost;
     Sophus::SE3 &T21;
     VecVector2d projection; // projected points
 
@@ -232,7 +234,8 @@ void DirectPoseEstimationSingleLayer(
     double cost = 0, lastCost = 0;
     auto t1 = chrono::steady_clock::now();
     vector<bool> outlier(px_ref.size(), false);
-    JacobianAccumulator jaco_accu(img1, img2, px_ref, depth_ref, outlier, T21);
+    vector<double> outlier_cost(px_ref.size(), 0.0);
+    JacobianAccumulator jaco_accu(img1, img2, px_ref, depth_ref, outlier, outlier_cost, T21);
 
     for (int iter = 0; iter < iterations; iter++) {
         jaco_accu.reset();
@@ -304,6 +307,7 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
 
     for (size_t i = range.start; i < range.end; i++) {
 
+        if (outlier[i]) continue;
         // compute the projection in the second image
         Eigen::Vector3d point_ref =
             depth_ref[i] * Eigen::Vector3d((px_ref[i][0] - cx) / fx, (px_ref[i][1] - cy) / fy, 1);
@@ -329,8 +333,8 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
                                GetPixelValue(img2, u + x, v + y);
                 // cout << "error before = " << error << endl;
                 // if ( rand() > RAND_MAX/5 ) {error = error + (float(rand())/RAND_MAX*100-50);}
-                error = error + (float(rand())/RAND_MAX*300-150);
-                cost_outlier += error*error;
+                error = error + (float(rand())/RAND_MAX*400-200);
+                outlier_cost[i] += error*error;
                 cnt_outlier++;
                 float hw = fabs(error) < huber_threshold ? 1 : huber_threshold / fabs(error);
                 // cout << "error = after = " << error << "  hw = " << hw << endl;
@@ -370,11 +374,12 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
                 // cout << "error = " << error << endl;
             }
         cost_outlier /= cnt_outlier;
-        if (cost_outlier) > 100 {
-            outlier[i] = true;
-        } else {
-            outlier[i] = false;
-        }
+        outlier_cost[i] /= cnt_outlier;
+        // if (cost_outlier > 100) {
+        //     outlier[i] = true;
+        // } else {
+        //     outlier[i] = false;
+        // }
     }
 
     if (cnt_good) {
