@@ -14,6 +14,7 @@ double fx = 637.27803366, fy = 637.30526147, cx = 636.3285782, cy = 377.00039794
 int cols, rows;
 // baseline
 double baseline = 0.573;
+int huber_threshold = 8;
 // paths
 string rgbd_dataset_path_ = "/home/zh/data/img";
 // string left_file = "../left.png";
@@ -36,8 +37,9 @@ public:
         const cv::Mat &img2_,
         const VecVector2d &px_ref_,
         const vector<double> depth_ref_,
+        vector<bool> &outlier_,
         Sophus::SE3 &T21_) :
-        img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), T21(T21_) {
+        img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), outlier(outlier_), T21(T21_) {
         projection = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
     }
 
@@ -68,6 +70,7 @@ private:
     const cv::Mat &img2;
     const VecVector2d &px_ref;
     const vector<double> depth_ref;
+    vector<bool> outlier;
     Sophus::SE3 &T21;
     VecVector2d projection; // projected points
 
@@ -159,8 +162,8 @@ void extractFeatures(cv::Mat& img, cv::Mat& disparity_img, VecVector2d& pixels_r
         case 1: {
             cout << "mode 1" << endl;
             // select the pixels with high gradiants 
-            for ( int x=1; x<img.cols-1; x+=2 ) {
-                for ( int y=1; y<img.rows-1; y+=2 ) {
+            for ( int x=1; x<img.cols-1; x+=3 ) {
+                for ( int y=1; y<img.rows-1; y+=3 ) {
                     Eigen::Vector2d delta (
                         img.ptr<uchar>(y)[x+1] - img.ptr<uchar>(y)[x-1], 
                         img.ptr<uchar>(y+1)[x] - img.ptr<uchar>(y-1)[x]
@@ -175,6 +178,7 @@ void extractFeatures(cv::Mat& img, cv::Mat& disparity_img, VecVector2d& pixels_r
                     pixels_ref.push_back(Eigen::Vector2d(x, y));
                 }
             }
+            cout << "extracted " << depth_ref.size() << " featuers" << endl;
             break;
         }
     }
@@ -210,9 +214,9 @@ int main(int argc, char **argv) {
             extractFeatures(left_img, disparity_img, pixels_ref, depth_ref, 1);
             continue;
         }
-        DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
+        // DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref); // CHECK GUESS
         // try single layer by uncomment this line
-        // DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
+        DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
     }
     return 0;
 }
@@ -224,10 +228,11 @@ void DirectPoseEstimationSingleLayer(
     const vector<double> depth_ref,
     Sophus::SE3 &T21) {
 
-    const int iterations = 10;
+    const int iterations = 4;
     double cost = 0, lastCost = 0;
     auto t1 = chrono::steady_clock::now();
-    JacobianAccumulator jaco_accu(img1, img2, px_ref, depth_ref, T21);
+    vector<bool> outlier(px_ref.size(), false);
+    JacobianAccumulator jaco_accu(img1, img2, px_ref, depth_ref, outlier, T21);
 
     for (int iter = 0; iter < iterations; iter++) {
         jaco_accu.reset();
@@ -237,8 +242,9 @@ void DirectPoseEstimationSingleLayer(
         Vector6d b = jaco_accu.bias();
 
         // solve update and put it into estimation
-        Vector6d update = H.ldlt().solve(b);;
-        T21 = Sophus::SE3::exp(update) * T21;
+        Vector6d update = H.ldlt().solve(b);
+        Sophus::SE3 T_cw_tmp = Sophus::SE3::exp(update) * T21;
+        // T21 = Sophus::SE3::exp(update) * T21;
         cost = jaco_accu.cost_func();
 
         if (std::isnan(update[0])) {
@@ -250,6 +256,7 @@ void DirectPoseEstimationSingleLayer(
             cout << "cost increased: " << cost << ", " << lastCost << endl;
             break;
         }
+        T21 = T_cw_tmp;
         if (update.norm() < 1e-3) {
             // converge
             break;
@@ -263,6 +270,7 @@ void DirectPoseEstimationSingleLayer(
     auto t2 = chrono::steady_clock::now();
     auto time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
     cout << "direct method for single layer: " << time_used.count() << endl;
+    if ( rand() > RAND_MAX/5 ) {cout << "val = " << (float(rand())/RAND_MAX*100-50) << endl;}
 
     // plot the projected pixels here
     cv::Mat img2_show;
@@ -286,11 +294,13 @@ void DirectPoseEstimationSingleLayer(
 void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
 
     // parameters
-    const int half_patch_size = 1;
+    const int half_patch_size = 0;
     int cnt_good = 0;
+    int cnt_outlier = 0;
     Matrix6d hessian = Matrix6d::Zero();
     Vector6d bias = Vector6d::Zero();
     double cost_tmp = 0;
+    double cost_outlier = 0;
 
     for (size_t i = range.start; i < range.end; i++) {
 
@@ -317,6 +327,14 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
 
                 double error = GetPixelValue(img1, px_ref[i][0] + x, px_ref[i][1] + y) -
                                GetPixelValue(img2, u + x, v + y);
+                // cout << "error before = " << error << endl;
+                // if ( rand() > RAND_MAX/5 ) {error = error + (float(rand())/RAND_MAX*100-50);}
+                error = error + (float(rand())/RAND_MAX*300-150);
+                cost_outlier += error*error;
+                cnt_outlier++;
+                float hw = fabs(error) < huber_threshold ? 1 : huber_threshold / fabs(error);
+                // cout << "error = after = " << error << "  hw = " << hw << endl;
+
                 Matrix26d J_pixel_xi;
                 Eigen::Vector2d J_img_pixel;
 
@@ -345,7 +363,18 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
                 hessian += J * J.transpose();
                 bias += -error * J;
                 cost_tmp += error * error;
+
+                // hessian += J * J.transpose() * hw;
+                // bias += -error * J * hw;
+                // cost_tmp += hw * error * error * hw;
+                // cout << "error = " << error << endl;
             }
+        cost_outlier /= cnt_outlier;
+        if (cost_outlier) > 100 {
+            outlier[i] = true;
+        } else {
+            outlier[i] = false;
+        }
     }
 
     if (cnt_good) {
