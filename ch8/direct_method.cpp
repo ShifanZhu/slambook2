@@ -38,14 +38,28 @@ public:
         const VecVector2d &px_ref_,
         const vector<double> depth_ref_,
         vector<bool> &outlier_,
+        Sophus::SE3 &T21_) :
+        img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), outlier(outlier_), T21(T21_) {
+        projection = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
+        projection_outlier = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
+    }
+
+    JacobianAccumulator(
+        const cv::Mat &img1_,
+        const cv::Mat &img2_,
+        const VecVector2d &px_ref_,
+        const vector<double> depth_ref_,
+        vector<bool> &outlier_,
         vector<double> &outlier_cost_,
         Sophus::SE3 &T21_) :
         img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), outlier(outlier_), outlier_cost(outlier_cost_), T21(T21_) {
         projection = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
+        projection_outlier = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
     }
 
     /// accumulate jacobians in a range
     void accumulate_jacobian(const cv::Range &range);
+    void compute_outlier(const cv::Range &range);
 
     /// get hessian matrix
     Matrix6d hessian() const { return H; }
@@ -58,6 +72,7 @@ public:
 
     /// get projected points
     VecVector2d projected_points() const { return projection; }
+    VecVector2d projected_outlier_points() const { return projection_outlier; }
 
     /// reset h, b, cost to zero
     void reset() {
@@ -75,6 +90,7 @@ private:
     vector<double> outlier_cost;
     Sophus::SE3 &T21;
     VecVector2d projection; // projected points
+    VecVector2d projection_outlier; // projected points
 
     std::mutex hessian_mutex;
     Matrix6d H = Matrix6d::Zero();
@@ -216,9 +232,9 @@ int main(int argc, char **argv) {
             extractFeatures(left_img, disparity_img, pixels_ref, depth_ref, 1);
             continue;
         }
-        // DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref); // CHECK GUESS
+        DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref); // CHECK GUESS
         // try single layer by uncomment this line
-        DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
+        // DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
     }
     return 0;
 }
@@ -235,7 +251,8 @@ void DirectPoseEstimationSingleLayer(
     auto t1 = chrono::steady_clock::now();
     vector<bool> outlier(px_ref.size(), false);
     vector<double> outlier_cost(px_ref.size(), 0.0);
-    JacobianAccumulator jaco_accu(img1, img2, px_ref, depth_ref, outlier, outlier_cost, T21);
+    JacobianAccumulator jaco_accu(img1, img2, px_ref, depth_ref, outlier, T21);
+    JacobianAccumulator com_outlier(img1, img2, px_ref, depth_ref, outlier, outlier_cost, T21);
 
     for (int iter = 0; iter < iterations; iter++) {
         jaco_accu.reset();
@@ -260,6 +277,8 @@ void DirectPoseEstimationSingleLayer(
             break;
         }
         T21 = T_cw_tmp;
+        cv::parallel_for_(cv::Range(0, px_ref.size()),
+                          std::bind(&JacobianAccumulator::compute_outlier, &com_outlier, std::placeholders::_1));
         if (update.norm() < 1e-3) {
             // converge
             break;
@@ -278,12 +297,19 @@ void DirectPoseEstimationSingleLayer(
     // plot the projected pixels here
     cv::Mat img2_show;
     cv::cvtColor(img2, img2_show, cv::COLOR_GRAY2BGR);
-    VecVector2d projection = jaco_accu.projected_points();
+    VecVector2d projection = com_outlier.projected_points();
+    VecVector2d projection_outlier = com_outlier.projected_outlier_points();
     for (size_t i = 0; i < px_ref.size(); ++i) {
         auto p_ref = px_ref[i];
         auto p_cur = projection[i];
+        auto p_cur_outlier = projection_outlier[i];
         if (p_cur[0] > 0 && p_cur[1] > 0) {
             cv::circle(img2_show, cv::Point2f(p_cur[0], p_cur[1]), 2, cv::Scalar(0, 250, 0), 1);
+            // cv::line(img2_show, cv::Point2f(p_ref[0], p_ref[1]), cv::Point2f(p_cur[0], p_cur[1]),
+            //          cv::Scalar(0, 250, 0));
+        }
+        if (p_cur_outlier[0] > 0 && p_cur_outlier[1] > 0) {
+            cv::circle(img2_show, cv::Point2f(p_cur_outlier[0], p_cur_outlier[1]), 2, cv::Scalar(0, 0, 250), 1);
             // cv::line(img2_show, cv::Point2f(p_ref[0], p_ref[1]), cv::Point2f(p_cur[0], p_cur[1]),
             //          cv::Scalar(0, 250, 0));
         }
@@ -297,7 +323,7 @@ void DirectPoseEstimationSingleLayer(
 void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
 
     // parameters
-    const int half_patch_size = 0;
+    const int half_patch_size = 1;
     int cnt_good = 0;
     int cnt_outlier = 0;
     Matrix6d hessian = Matrix6d::Zero();
@@ -320,7 +346,7 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
             v > img2.rows - half_patch_size)
             continue;
 
-        projection[i] = Eigen::Vector2d(u, v);
+        // projection[i] = Eigen::Vector2d(u, v);
         double X = point_cur[0], Y = point_cur[1], Z = point_cur[2],
             Z2 = Z * Z, Z_inv = 1.0 / Z, Z2_inv = Z_inv * Z_inv;
         cnt_good++;
@@ -333,9 +359,9 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
                                GetPixelValue(img2, u + x, v + y);
                 // cout << "error before = " << error << endl;
                 // if ( rand() > RAND_MAX/5 ) {error = error + (float(rand())/RAND_MAX*100-50);}
-                error = error + (float(rand())/RAND_MAX*400-200);
-                outlier_cost[i] += error*error;
-                cnt_outlier++;
+                // error = error + (float(rand())/RAND_MAX*400-200);
+                // outlier_cost[i] += error*error;
+                // cnt_outlier++;
                 float hw = fabs(error) < huber_threshold ? 1 : huber_threshold / fabs(error);
                 // cout << "error = after = " << error << "  hw = " << hw << endl;
 
@@ -364,17 +390,17 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
                 // total jacobian
                 Vector6d J = -1.0 * (J_img_pixel.transpose() * J_pixel_xi).transpose();
 
-                hessian += J * J.transpose();
-                bias += -error * J;
-                cost_tmp += error * error;
+                // hessian += J * J.transpose();
+                // bias += -error * J;
+                // cost_tmp += error * error;
 
-                // hessian += J * J.transpose() * hw;
-                // bias += -error * J * hw;
-                // cost_tmp += hw * error * error * hw;
+                hessian += J * J.transpose() * hw * hw;
+                bias += -error * J * hw * hw;
+                cost_tmp += hw * error * error * hw;
                 // cout << "error = " << error << endl;
             }
-        cost_outlier /= cnt_outlier;
-        outlier_cost[i] /= cnt_outlier;
+        // cost_outlier /= cnt_outlier;
+        // outlier_cost[i] /= cnt_outlier;
         // if (cost_outlier > 100) {
         //     outlier[i] = true;
         // } else {
@@ -388,6 +414,62 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
         H += hessian;
         b += bias;
         cost += cost_tmp / cnt_good;
+    }
+}
+
+void JacobianAccumulator::compute_outlier(const cv::Range &range) {
+
+    // parameters
+    const int half_patch_size = 1;
+    int cnt_good = 0;
+    int cnt_outlier = 0;
+    double cost_outlier = 0;
+    // projection.clear();
+
+    for (size_t i = range.start; i < range.end; i++) {
+
+        // if (outlier[i]) continue;
+        // compute the projection in the second image
+        Eigen::Vector3d point_ref =
+            depth_ref[i] * Eigen::Vector3d((px_ref[i][0] - cx) / fx, (px_ref[i][1] - cy) / fy, 1);
+        Eigen::Vector3d point_cur = T21 * point_ref;
+        if (point_cur[2] <= 0)   // depth invalid
+            continue;
+
+        float u = fx * point_cur[0] / point_cur[2] + cx, v = fy * point_cur[1] / point_cur[2] + cy;
+        if (u < half_patch_size || u > img2.cols - half_patch_size || v < half_patch_size ||
+            v > img2.rows - half_patch_size)
+            continue;
+
+        cnt_good++;
+        cost_outlier = 0;
+
+        // and compute error and jacobian
+        for (int x = -half_patch_size; x <= half_patch_size; x++)
+            for (int y = -half_patch_size; y <= half_patch_size; y++) {
+
+                double error = GetPixelValue(img1, px_ref[i][0] + x, px_ref[i][1] + y) -
+                               GetPixelValue(img2, u + x, v + y);
+                // cout << "error before = " << error << endl;
+                // if ( rand() > RAND_MAX/5 ) {error = error + (float(rand())/RAND_MAX*100-50);}
+                // error = error + (float(rand())/RAND_MAX*400-200);
+                // outlier_cost[i] += error*error;
+                cost_outlier += error * error;
+                cnt_outlier++;
+            }
+        cost_outlier /= cnt_outlier;
+        // outlier_cost[i] /= cnt_outlier;
+        if (cost_outlier > 300) {
+            outlier[i] = true;
+            projection[i] = Eigen::Vector2d(0, 0);
+            projection_outlier[i] = Eigen::Vector2d(u, v);
+
+        } else {
+            outlier[i] = false;
+            projection[i] = Eigen::Vector2d(u, v);
+            projection_outlier[i] = Eigen::Vector2d(0, 0);
+            // cout << " " << projection[i].transpose();
+        }
     }
 }
 
