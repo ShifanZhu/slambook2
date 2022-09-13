@@ -1,5 +1,5 @@
 #include <opencv2/opencv.hpp>
-#include <sophus/se3.h>
+#include <sophus/se3.hpp>
 #include <boost/format.hpp>
 #include <pangolin/pangolin.h>
 
@@ -21,8 +21,8 @@ string rgbd_dataset_path_ = "/home/zh/data/img";
 string left_file = "../event6.png";
 // string disparity_file = "../disparity.png";
 string disparity_file = "../depth6.png";
-boost::format fmt("%s/image_%d/%06d.png"); // 10 us
-boost::format fmt_others("../%06d.png");    // other files
+boost::format fmt_file("%s/image_%d/%06d.png"); // 10 us
+// boost::format fmt_others("../%06d.png");    // other files
 
 // useful typedefs
 typedef Eigen::Matrix<double, 6, 6> Matrix6d;
@@ -38,7 +38,7 @@ public:
         const VecVector2d &px_ref_,
         const vector<double> depth_ref_,
         vector<bool> &outlier_,
-        Sophus::SE3 &T21_) :
+        Sophus::SE3d &T21_) :
         img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), outlier(outlier_), T21(T21_) {
         projection = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
         projection_outlier = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
@@ -51,7 +51,7 @@ public:
         const vector<double> depth_ref_,
         vector<bool> &outlier_,
         vector<double> &outlier_cost_,
-        Sophus::SE3 &T21_) :
+        Sophus::SE3d &T21_) :
         img1(img1_), img2(img2_), px_ref(px_ref_), depth_ref(depth_ref_), outlier(outlier_), outlier_cost(outlier_cost_), T21(T21_) {
         projection = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
         projection_outlier = VecVector2d(px_ref.size(), Eigen::Vector2d(0, 0));
@@ -88,7 +88,7 @@ private:
     const vector<double> depth_ref;
     vector<bool> outlier;
     vector<double> outlier_cost;
-    Sophus::SE3 &T21;
+    Sophus::SE3d &T21;
     VecVector2d projection; // projected points
     VecVector2d projection_outlier; // projected points
 
@@ -111,7 +111,7 @@ void DirectPoseEstimationMultiLayer(
     const cv::Mat &img2,
     const VecVector2d &px_ref,
     const vector<double> depth_ref,
-    Sophus::SE3 &T21
+    Sophus::SE3d &T21
 );
 
 /**
@@ -127,7 +127,7 @@ void DirectPoseEstimationSingleLayer(
     const cv::Mat &img2,
     const VecVector2d &px_ref,
     const vector<double> depth_ref,
-    Sophus::SE3 &T21
+    Sophus::SE3d &T21
 );
 
 // bilinear interpolation
@@ -219,22 +219,22 @@ int main(int argc, char **argv) {
     extractFeatures(left_img, disparity_img, pixels_ref, depth_ref, 1);
 
     // estimates 01~05.png's pose using this information
-    Sophus::SE3 T_cur_ref;
+    Sophus::SE3d T_cur_ref;
 
     for (int i = 700; i < 3500; i+=1) {  // 1~10
     // for (int i = 1; i < 6; i++) {  // 1~10
         // cv::Mat img = cv::imread((fmt_others % i).str(), 0);
         // cv::Mat img = cv::imread("../event"+std::to_string(i)+".png", 0);
-        cv::Mat img = cv::imread((fmt % rgbd_dataset_path_ % 0 % i).str(), 0);
+        cv::Mat img = cv::imread((fmt_file % rgbd_dataset_path_ % 0 % i).str(), 0);
         if (i % 3 == 0) {
             left_img = img.clone();
-            disparity_img = cv::imread((fmt % rgbd_dataset_path_ % 1 % i).str(), cv::IMREAD_UNCHANGED);
+            disparity_img = cv::imread((fmt_file % rgbd_dataset_path_ % 1 % i).str(), cv::IMREAD_UNCHANGED);
             extractFeatures(left_img, disparity_img, pixels_ref, depth_ref, 1);
             continue;
         }
-        DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref); // CHECK GUESS
+        // DirectPoseEstimationMultiLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref); // CHECK GUESS
         // try single layer by uncomment this line
-        // DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
+        DirectPoseEstimationSingleLayer(left_img, img, pixels_ref, depth_ref, T_cur_ref);
     }
     return 0;
 }
@@ -244,7 +244,7 @@ void DirectPoseEstimationSingleLayer(
     const cv::Mat &img2,
     const VecVector2d &px_ref,
     const vector<double> depth_ref,
-    Sophus::SE3 &T21) {
+    Sophus::SE3d &T21) {
 
     const int iterations = 4;
     double cost = 0, lastCost = 0;
@@ -255,16 +255,22 @@ void DirectPoseEstimationSingleLayer(
     JacobianAccumulator com_outlier(img1, img2, px_ref, depth_ref, outlier, outlier_cost, T21);
 
     for (int iter = 0; iter < iterations; iter++) {
+        auto t1 = std::chrono::steady_clock::now();
         jaco_accu.reset();
         cv::parallel_for_(cv::Range(0, px_ref.size()),
                           std::bind(&JacobianAccumulator::accumulate_jacobian, &jaco_accu, std::placeholders::_1));
+        auto t2 = std::chrono::steady_clock::now();
+        auto time_used =
+            std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);
+        std::cout<< "DirectMethod cost time: " << time_used.count() << " seconds" <<std::endl;
+        
         Matrix6d H = jaco_accu.hessian();
         Vector6d b = jaco_accu.bias();
 
         // solve update and put it into estimation
         Vector6d update = H.ldlt().solve(b);
-        Sophus::SE3 T_cw_tmp = Sophus::SE3::exp(update) * T21;
-        // T21 = Sophus::SE3::exp(update) * T21;
+        Sophus::SE3d T_cw_tmp = Sophus::SE3d::exp(update) * T21;
+        // T21 = Sophus::SE3d::exp(update) * T21;
         cost = jaco_accu.cost_func();
 
         if (std::isnan(update[0])) {
@@ -330,6 +336,7 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
     Vector6d bias = Vector6d::Zero();
     double cost_tmp = 0;
     double cost_outlier = 0;
+    // std::cout << "cost_tmp = "<<cost_tmp<<std::endl;
 
     for (size_t i = range.start; i < range.end; i++) {
 
@@ -354,6 +361,7 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
         // and compute error and jacobian
         for (int x = -half_patch_size; x <= half_patch_size; x++)
             for (int y = -half_patch_size; y <= half_patch_size; y++) {
+                // cout << "ixy = "<<i<<" "<<x<<" "<<y<<endl;
 
                 double error = GetPixelValue(img1, px_ref[i][0] + x, px_ref[i][1] + y) -
                                GetPixelValue(img2, u + x, v + y);
@@ -410,11 +418,13 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
 
     if (cnt_good) {
         // set hessian, bias and cost
+        // std::cout<<"cnt_good = "<<cnt_good<<std::endl;
         unique_lock<mutex> lck(hessian_mutex);
         H += hessian;
         b += bias;
         cost += cost_tmp / cnt_good;
     }
+    // std::cout<<"Finish optimization (direct) "<<std::endl;
 }
 
 void JacobianAccumulator::compute_outlier(const cv::Range &range) {
@@ -478,7 +488,7 @@ void DirectPoseEstimationMultiLayer(
     const cv::Mat &img2,
     const VecVector2d &px_ref,
     const vector<double> depth_ref,
-    Sophus::SE3 &T21) {
+    Sophus::SE3d &T21) {
 
     // parameters
     int pyramids = 4;
