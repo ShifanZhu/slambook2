@@ -84,6 +84,11 @@
         "ios": "cpp",
         "locale": "cpp",
         "queue": "cpp",
-        "stack": "cpp"
+        "stack": "cpp",
+        "any": "cpp",
+        "core": "cpp",
+        "span": "cpp",
+        "unordered_set": "cpp",
+        "numbers": "cpp"
     }
 }

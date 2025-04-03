@@ -1,5 +1,6 @@
 #include <iostream>
 #include <opencv2/core/core.hpp>
+#include <opencv2/opencv.hpp>
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/calib3d/calib3d.hpp>
@@ -33,8 +34,11 @@ typedef vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d>> VecVe
 void bundleAdjustmentG2O(
   const VecVector3d &points_3d,
   const VecVector2d &points_2d,
+  const VecVector2d &points_2d_1,
   const Mat &K,
-  Sophus::SE3d &pose
+  Sophus::SE3d &pose,
+  cv::Mat* img1,
+  cv::Mat* img2
 );
 
 // BA by gauss-newton
@@ -57,7 +61,11 @@ int main(int argc, char **argv) {
 
   vector<KeyPoint> keypoints_1, keypoints_2;
   vector<DMatch> matches;
+  Mat img_match;
   find_feature_matches(img_1, img_2, keypoints_1, keypoints_2, matches);
+  drawMatches(img_1, keypoints_1, img_2, keypoints_2, matches, img_match);
+  imshow("all matches", img_match);
+  cv::waitKey(0);
   cout << "一共找到了" << matches.size() << "组匹配点" << endl;
 
   // 建立3D点
@@ -65,6 +73,7 @@ int main(int argc, char **argv) {
   Mat K = (Mat_<double>(3, 3) << 520.9, 0, 325.1, 0, 521.0, 249.7, 0, 0, 1);
   vector<Point3f> pts_3d;
   vector<Point2f> pts_2d;
+  vector<Point2f> pts_2d_1;
   for (DMatch m:matches) {
     ushort d = d1.ptr<unsigned short>(int(keypoints_1[m.queryIdx].pt.y))[int(keypoints_1[m.queryIdx].pt.x)];
     if (d == 0)   // bad depth
@@ -73,6 +82,7 @@ int main(int argc, char **argv) {
     Point2d p1 = pixel2cam(keypoints_1[m.queryIdx].pt, K);
     pts_3d.push_back(Point3f(p1.x * dd, p1.y * dd, dd));
     pts_2d.push_back(keypoints_2[m.trainIdx].pt);
+    pts_2d_1.push_back(keypoints_1[m.queryIdx].pt);
   }
 
   cout << "3d-2d pairs: " << pts_3d.size() << endl;
@@ -91,9 +101,11 @@ int main(int argc, char **argv) {
 
   VecVector3d pts_3d_eigen;
   VecVector2d pts_2d_eigen;
+  VecVector2d pts_2d_eigen_1;
   for (size_t i = 0; i < pts_3d.size(); ++i) {
     pts_3d_eigen.push_back(Eigen::Vector3d(pts_3d[i].x, pts_3d[i].y, pts_3d[i].z));
     pts_2d_eigen.push_back(Eigen::Vector2d(pts_2d[i].x, pts_2d[i].y));
+    pts_2d_eigen_1.push_back(Eigen::Vector2d(pts_2d_1[i].x, pts_2d_1[i].y));
   }
 
   cout << "calling bundle adjustment by gauss newton" << endl;
@@ -107,7 +119,9 @@ int main(int argc, char **argv) {
   cout << "calling bundle adjustment by g2o" << endl;
   Sophus::SE3d pose_g2o;
   t1 = chrono::steady_clock::now();
-  bundleAdjustmentG2O(pts_3d_eigen, pts_2d_eigen, K, pose_g2o);
+  cv::cvtColor(img_1, img_1, cv::COLOR_BGR2GRAY);
+  cv::cvtColor(img_2, img_2, cv::COLOR_BGR2GRAY);
+  bundleAdjustmentG2O(pts_3d_eigen, pts_2d_eigen, pts_2d_eigen_1, K, pose_g2o, &img_1, &img_2);
   t2 = chrono::steady_clock::now();
   time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
   cout << "solve pnp by g2o cost time: " << time_used.count() << " seconds." << endl;
@@ -155,7 +169,7 @@ void find_feature_matches(const Mat &img_1, const Mat &img_2,
 
   //当描述子之间的距离大于两倍的最小距离时,即认为匹配有误.但有时候最小距离会非常小,设置一个经验值30作为下限.
   for (int i = 0; i < descriptors_1.rows; i++) {
-    if (match[i].distance <= max(2 * min_dist, 30.0)) {
+    if (match[i].distance <= max(1.5 * min_dist, 50.0)) {
       matches.push_back(match[i]);
     }
   }
@@ -304,27 +318,124 @@ private:
   Eigen::Matrix3d _K;
 };
 
+
+class EdgeProjectionDirect : public g2o::BaseUnaryEdge<1, double, VertexPose> {
+public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+  EdgeProjectionDirect(const Eigen::Vector3d &pos, const Eigen::Matrix3d &K, cv::Mat* gray_img) : _pos3d(pos), _K(K), _gray_img(gray_img) {}
+
+  virtual void computeError() override {
+    const VertexPose *v = static_cast<VertexPose *> (_vertices[0]);
+    Sophus::SE3d T = v->estimate();
+    Eigen::Vector3d pos_pixel = _K * (T * _pos3d);
+    pos_pixel /= pos_pixel[2];
+    // _error = _measurement - pos_pixel.head<2>();
+    _error(0, 0) = _measurement - getPixelValue(pos_pixel[0], pos_pixel[1]);
+    // cout << "error " << _measurement << " " << getPixelValue(pos_pixel[0], pos_pixel[1]) << endl;
+  }
+
+  virtual void linearizeOplus() override {
+    const VertexPose *v = static_cast<VertexPose *> (_vertices[0]);
+    Sophus::SE3d T = v->estimate();
+    Eigen::Vector3d pos_cam = T * _pos3d;
+    double fx = _K(0, 0);
+    double fy = _K(1, 1);
+    double cx = _K(0, 2);
+    double cy = _K(1, 2);
+    double X = pos_cam[0];
+    double Y = pos_cam[1];
+    double Z = pos_cam[2];
+    double Zinv = 1.0 / Z;
+    double Z2 = Z * Z;
+    float img_u = X * fx * Zinv + cx;
+    float img_v = Y * fy * Zinv + cy;
+    Eigen::Matrix<double, 2, 6> jacobian_uv_ksai;
+    Eigen::Matrix<double, 1, 2> jacobian_pixel_uv;
+    // _jacobianOplusXi
+    jacobian_uv_ksai << -fx / Z, 0, fx * X / Z2, fx * X * Y / Z2, -fx - fx * X * X / Z2, fx * Y / Z,
+      0, -fy / Z, fy * Y / (Z * Z), fy + fy * Y * Y / Z2, -fy * X * Y / Z2, -fy * X / Z;
+
+    jacobian_pixel_uv( 0,0 ) = (getPixelValue(img_u+1, img_v)-getPixelValue(img_u-1, img_v)) / 2;
+    jacobian_pixel_uv( 0,1 ) = (getPixelValue(img_u, img_v+1)-getPixelValue(img_u, img_v-1)) / 2;
+    _jacobianOplusXi = jacobian_pixel_uv*jacobian_uv_ksai;
+  }
+
+  virtual bool read(istream &in) override {}
+
+  virtual bool write(ostream &out) const override {}
+
+  // get a gray scale value from reference image (bilinear interpolated)
+  inline float getPixelValue ( float x, float y )
+  {
+
+      // return float(_gray_img->ptr<uchar>(int(y))[int(x)]);
+      uchar* data = & _gray_img->data[ int ( y ) * _gray_img->step + int ( x ) ];
+      float xx = x - floor ( x );
+      float yy = y - floor ( y );
+      return float (
+                  ( 1-xx ) * ( 1-yy ) * data[0] +
+                  xx* ( 1-yy ) * data[1] +
+                  ( 1-xx ) *yy*data[_gray_img->step ] +
+                  xx*yy*data[_gray_img->step+1]
+              );
+  }
+
+private:
+  Eigen::Vector3d _pos3d;
+  Eigen::Matrix3d _K;
+  cv::Mat* _gray_img = nullptr;    // reference image
+};
+
+float getPixelValue ( float x, float y, cv::Mat* img)
+{
+
+    // return float(_gray_img->ptr<uchar>(int(y))[int(x)]);
+    uchar* data = &img->data[ int ( y ) * img->step + int ( x ) ];
+    float xx = x - floor ( x );
+    float yy = y - floor ( y );
+    return float (
+                ( 1-xx ) * ( 1-yy ) * data[0] +
+                xx* ( 1-yy ) * data[1] +
+                ( 1-xx ) *yy*data[img->step ] +
+                xx*yy*data[img->step+1]
+            );
+}
+
 void bundleAdjustmentG2O(
   const VecVector3d &points_3d,
   const VecVector2d &points_2d,
+  const VecVector2d &points_2d_1,
   const Mat &K,
-  Sophus::SE3d &pose) {
+  Sophus::SE3d &pose,
+  cv::Mat* img1,
+  cv::Mat* img2) {
 
   // 构建图优化，先设定g2o
-  typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 3>> BlockSolverType;  // pose is 6, landmark is 3
+  // typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 3>> BlockSolverType;  // pose is 6, landmark is 3
+  typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 1>> BlockSolverType;  // pose is 6, landmark is 3
   typedef g2o::LinearSolverDense<BlockSolverType::PoseMatrixType> LinearSolverType; // 线性求解器类型
   // 梯度下降方法，可以从GN, LM, DogLeg 中选
   auto solver = new g2o::OptimizationAlgorithmGaussNewton(
     g2o::make_unique<BlockSolverType>(g2o::make_unique<LinearSolverType>()));
+  auto solver_direct = new g2o::OptimizationAlgorithmGaussNewton(
+    g2o::make_unique<BlockSolverType>(g2o::make_unique<LinearSolverType>()));
   g2o::SparseOptimizer optimizer;     // 图模型
+  g2o::SparseOptimizer optimizer_direct;     // 图模型
   optimizer.setAlgorithm(solver);   // 设置求解器
   optimizer.setVerbose(true);       // 打开调试输出
+  optimizer_direct.setAlgorithm(solver_direct);   // 设置求解器
+  optimizer_direct.setVerbose(true);       // 打开调试输出
 
   // vertex
   VertexPose *vertex_pose = new VertexPose(); // camera vertex_pose
   vertex_pose->setId(0);
   vertex_pose->setEstimate(Sophus::SE3d());
   optimizer.addVertex(vertex_pose);
+
+  VertexPose *vertex_pose_direct = new VertexPose(); // camera vertex_pose
+  vertex_pose_direct->setId(0);
+  vertex_pose_direct->setEstimate(Sophus::SE3d());
+  optimizer_direct.addVertex(vertex_pose_direct);
 
   // K
   Eigen::Matrix3d K_eigen;
@@ -347,13 +458,31 @@ void bundleAdjustmentG2O(
     index++;
   }
 
+  int index_direct = 1;
+  for (size_t i = 0; i < points_2d.size(); ++i) {
+    auto p2d = points_2d_1[i];
+    auto p3d = points_3d[i];
+    
+    EdgeProjectionDirect *edge = new EdgeProjectionDirect(p3d, K_eigen, img2);
+    edge->setId(index_direct);
+    edge->setVertex(0, vertex_pose_direct);
+    edge->setMeasurement(getPixelValue(float(p2d[0]), float(p2d[1]), img1));
+    edge->setInformation(Eigen::Matrix<double, 1, 1>::Identity());
+    optimizer_direct.addEdge(edge);
+    index_direct++;
+  }
+
   chrono::steady_clock::time_point t1 = chrono::steady_clock::now();
   optimizer.setVerbose(true);
   optimizer.initializeOptimization();
   optimizer.optimize(10);
+  optimizer_direct.setVerbose(true);
+  optimizer_direct.initializeOptimization();
+  optimizer_direct.optimize(10);
   chrono::steady_clock::time_point t2 = chrono::steady_clock::now();
   chrono::duration<double> time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
   cout << "optimization costs time: " << time_used.count() << " seconds." << endl;
   cout << "pose estimated by g2o =\n" << vertex_pose->estimate().matrix() << endl;
+  cout << "pose estimated by g2o direct =\n" << vertex_pose_direct->estimate().matrix() << endl;
   pose = vertex_pose->estimate();
 }

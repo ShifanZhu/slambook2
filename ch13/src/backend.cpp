@@ -28,6 +28,7 @@ void Backend::Stop() {
 }
 
 void Backend::BackendLoop() {
+    using namespace std::chrono;
     while (backend_running_.load()) {
         std::unique_lock<std::mutex> lock(data_mutex_);
         map_update_.wait(lock);
@@ -36,6 +37,7 @@ void Backend::BackendLoop() {
         Map::KeyframesType active_kfs = map_->GetActiveKeyFrames();
         Map::LandmarksType active_landmarks = map_->GetActiveMapPoints();
         Optimize(active_kfs, active_landmarks);
+        std::this_thread::sleep_for(10s);
     }
 }
 
@@ -168,6 +170,8 @@ void Backend::Optimize(Map::KeyframesType &keyframes,
         keyframes.at(v.first)->SetPose(v.second->estimate());
     }
     for (auto &v : vertices_landmarks) {
+        LOG(INFO) << "Landmark before optimization = " << landmarks.at(v.first)->Pos().transpose();
+        LOG(INFO) << "Landmark after optimization = " << v.second->estimate().transpose();
         landmarks.at(v.first)->SetPos(v.second->estimate());
     }
 }
