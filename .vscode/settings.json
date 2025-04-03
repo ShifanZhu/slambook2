@@ -85,10 +85,15 @@
         "locale": "cpp",
         "queue": "cpp",
         "stack": "cpp",
-        "any": "cpp",
         "core": "cpp",
-        "span": "cpp",
+        "any": "cpp",
+        "hash_map": "cpp",
+        "hash_set": "cpp",
+        "cfenv": "cpp",
+        "codecvt": "cpp",
+        "forward_list": "cpp",
         "unordered_set": "cpp",
+        "source_location": "cpp",
         "numbers": "cpp"
     }
 }

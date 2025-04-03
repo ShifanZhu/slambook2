@@ -12,7 +12,7 @@
 #include <g2o/core/solver.h>
 #include <g2o/core/optimization_algorithm_gauss_newton.h>
 #include <g2o/solvers/dense/linear_solver_dense.h>
-#include <sophus/se3.hpp>
+#include <sophus/se3.h>
 #include <chrono>
 
 using namespace std;
@@ -46,7 +46,7 @@ void bundleAdjustmentGaussNewton(
   const VecVector3d &points_3d,
   const VecVector2d &points_2d,
   const Mat &K,
-  Sophus::SE3d &pose
+  Sophus::SE3 &pose
 );
 
 int main(int argc, char **argv) {
@@ -61,11 +61,11 @@ int main(int argc, char **argv) {
 
   vector<KeyPoint> keypoints_1, keypoints_2;
   vector<DMatch> matches;
-  Mat img_match;
+  chrono::steady_clock::time_point t1 = chrono::steady_clock::now();
   find_feature_matches(img_1, img_2, keypoints_1, keypoints_2, matches);
-  drawMatches(img_1, keypoints_1, img_2, keypoints_2, matches, img_match);
-  imshow("all matches", img_match);
-  cv::waitKey(0);
+  chrono::steady_clock::time_point t2 = chrono::steady_clock::now();
+  chrono::duration<double> time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
+  cout << "detect & descript & match cost time: " << time_used.count() << " seconds." << endl;
   cout << "一共找到了" << matches.size() << "组匹配点" << endl;
 
   // 建立3D点
@@ -87,13 +87,13 @@ int main(int argc, char **argv) {
 
   cout << "3d-2d pairs: " << pts_3d.size() << endl;
 
-  chrono::steady_clock::time_point t1 = chrono::steady_clock::now();
+  t1 = chrono::steady_clock::now();
   Mat r, t;
   solvePnP(pts_3d, pts_2d, K, Mat(), r, t, false); // 调用OpenCV 的 PnP 求解，可选择EPNP，DLS等方法
   Mat R;
   cv::Rodrigues(r, R); // r为旋转向量形式，用Rodrigues公式转换为矩阵
-  chrono::steady_clock::time_point t2 = chrono::steady_clock::now();
-  chrono::duration<double> time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
+  t2 = chrono::steady_clock::now();
+  time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
   cout << "solve pnp in opencv cost time: " << time_used.count() << " seconds." << endl;
 
   cout << "R=" << endl << R << endl;
@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
   }
 
   cout << "calling bundle adjustment by gauss newton" << endl;
-  Sophus::SE3d pose_gn;
+  Sophus::SE3 pose_gn;
   t1 = chrono::steady_clock::now();
   bundleAdjustmentGaussNewton(pts_3d_eigen, pts_2d_eigen, K, pose_gn);
   t2 = chrono::steady_clock::now();
@@ -117,7 +117,7 @@ int main(int argc, char **argv) {
   cout << "solve pnp by gauss newton cost time: " << time_used.count() << " seconds." << endl;
 
   cout << "calling bundle adjustment by g2o" << endl;
-  Sophus::SE3d pose_g2o;
+  Sophus::SE3 pose_g2o;
   t1 = chrono::steady_clock::now();
   cv::cvtColor(img_1, img_1, cv::COLOR_BGR2GRAY);
   cv::cvtColor(img_2, img_2, cv::COLOR_BGR2GRAY);
@@ -187,7 +187,7 @@ void bundleAdjustmentGaussNewton(
   const VecVector3d &points_3d,
   const VecVector2d &points_2d,
   const Mat &K,
-  Sophus::SE3d &pose) {
+  Sophus::SE3 &pose) {
   typedef Eigen::Matrix<double, 6, 1> Vector6d;
   const int iterations = 10;
   double cost = 0, lastCost = 0;
@@ -244,7 +244,7 @@ void bundleAdjustmentGaussNewton(
     }
 
     // update your estimation
-    pose = Sophus::SE3d::exp(dx) * pose;
+    pose = Sophus::SE3::exp(dx) * pose;
     lastCost = cost;
 
     cout << "iteration " << iter << " cost=" << std::setprecision(12) << cost << endl;
@@ -258,19 +258,19 @@ void bundleAdjustmentGaussNewton(
 }
 
 /// vertex and edges used in g2o ba
-class VertexPose : public g2o::BaseVertex<6, Sophus::SE3d> {
+class VertexPose : public g2o::BaseVertex<6, Sophus::SE3> {
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 
   virtual void setToOriginImpl() override {
-    _estimate = Sophus::SE3d();
+    _estimate = Sophus::SE3();
   }
 
   /// left multiplication on SE3
   virtual void oplusImpl(const double *update) override {
     Eigen::Matrix<double, 6, 1> update_eigen;
     update_eigen << update[0], update[1], update[2], update[3], update[4], update[5];
-    _estimate = Sophus::SE3d::exp(update_eigen) * _estimate;
+    _estimate = Sophus::SE3::exp(update_eigen) * _estimate;
   }
 
   virtual bool read(istream &in) override {}
@@ -286,7 +286,7 @@ public:
 
   virtual void computeError() override {
     const VertexPose *v = static_cast<VertexPose *> (_vertices[0]);
-    Sophus::SE3d T = v->estimate();
+    Sophus::SE3 T = v->estimate();
     Eigen::Vector3d pos_pixel = _K * (T * _pos3d);
     pos_pixel /= pos_pixel[2];
     _error = _measurement - pos_pixel.head<2>();
@@ -294,7 +294,7 @@ public:
 
   virtual void linearizeOplus() override {
     const VertexPose *v = static_cast<VertexPose *> (_vertices[0]);
-    Sophus::SE3d T = v->estimate();
+    Sophus::SE3 T = v->estimate();
     Eigen::Vector3d pos_cam = T * _pos3d;
     double fx = _K(0, 0);
     double fy = _K(1, 1);
@@ -429,7 +429,7 @@ void bundleAdjustmentG2O(
   // vertex
   VertexPose *vertex_pose = new VertexPose(); // camera vertex_pose
   vertex_pose->setId(0);
-  vertex_pose->setEstimate(Sophus::SE3d());
+  vertex_pose->setEstimate(Sophus::SE3());
   optimizer.addVertex(vertex_pose);
 
   VertexPose *vertex_pose_direct = new VertexPose(); // camera vertex_pose

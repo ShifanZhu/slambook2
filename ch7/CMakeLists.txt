@@ -6,9 +6,10 @@ add_definitions("-DENABLE_SSE")
 set(CMAKE_CXX_FLAGS "-std=c++14 -O2 ${SSE_FLAGS} -msse4")
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
-find_package(OpenCV 3 REQUIRED)
+find_package(OpenCV 4 REQUIRED)
 find_package(G2O REQUIRED)
 find_package(Sophus REQUIRED)
+set(Sophus_LIBRARIES libSophus.so)
 find_package(FMT REQUIRED)
 
 include_directories(
@@ -36,10 +37,12 @@ add_executable(pose_estimation_3d2d pose_estimation_3d2d.cpp)
 target_link_libraries(pose_estimation_3d2d
         g2o_core g2o_stuff
         ${OpenCV_LIBS}
-        fmt::fmt)
+        fmt::fmt
+        ${Sophus_LIBRARIES})
 
 add_executable(pose_estimation_3d3d pose_estimation_3d3d.cpp)
 target_link_libraries(pose_estimation_3d3d
         g2o_core g2o_stuff
         ${OpenCV_LIBS}
-        fmt::fmt)
+        fmt::fmt
+        ${Sophus_LIBRARIES})
